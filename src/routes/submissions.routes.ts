@@ -1,0 +1,365 @@
+import { Router, Request, Response } from "express";
+import mongoose from "mongoose";
+import { Submission } from "../models/Submission.js";
+import { Candidate } from "../models/Candidate.js";
+import { Test } from "../models/Test.js";
+import { Question } from "../models/Question.js";
+import { TestInvite } from "../models/TestInvite.js";
+import { ViolationLog } from "../models/ViolationLog.js";
+import { authenticateUser, requireRole, AuthRequest } from "../middleware/auth.js";
+import { uploadVideoToCloudinary } from "../lib/cloudinary.js";
+
+const router = Router();
+
+// GET /api/submissions
+router.get(
+  "/",
+  authenticateUser,
+  requireRole(["super_admin", "admin", "recruiter", "interviewer"]),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      let query: any = {};
+      if (req.user?.companyId) {
+        query = {
+          $or: [
+            { companyId: req.user.companyId },
+            { companyId: { $exists: false } },
+          ],
+        };
+      }
+
+      const submissions = await Submission.find(query)
+        .select("-recordingSnapshots")
+        .populate("candidateId")
+        .populate("testId")
+        .sort({ createdAt: -1 })
+        .lean();
+
+      const mapped = submissions.map((s: any) => {
+        const candObj = s.candidateId ? s.candidateId : null;
+        const testObj = s.testId ? s.testId : null;
+
+        return {
+          ...s,
+          id: s._id.toString(),
+          candidate: candObj ? { ...candObj, id: candObj._id ? candObj._id.toString() : "" } : null,
+          test: testObj ? { ...testObj, id: testObj._id ? testObj._id.toString() : "" } : null,
+          finalScore: s.finalScore ?? s.autoScore ?? 0,
+          autoScore: s.autoScore ?? 0,
+          manualScore: s.manualScore ?? 0,
+          totalMarks: testObj?.totalMarks || 100,
+        };
+      });
+
+      return res.json({ submissions: mapped });
+    } catch (error) {
+      console.error("Submissions API error:", error);
+      return res.status(500).json({ error: "Internal Server Error" });
+    }
+  }
+);
+
+// POST /api/submissions/start
+router.post("/start", async (req: Request, res: Response) => {
+  try {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ error: "Token is required" });
+
+    const invite = await TestInvite.findOne({ token });
+    if (!invite) return res.json({ error: "Invalid token" });
+
+    if (invite.status === "expired" || new Date() > new Date(invite.expiresAt)) {
+      if (invite.status !== "expired") {
+        invite.status = "expired";
+        await invite.save();
+      }
+      return res.json({ error: "Invitation expired" });
+    }
+
+    if (invite.status === "completed") {
+      return res.json({ error: "Test already completed" });
+    }
+
+    const test = await Test.findById(invite.testId);
+    if (!test) return res.json({ error: "Test not found" });
+
+    let submission = await Submission.findOne({ testId: invite.testId, candidateId: invite.candidateId });
+
+    if (!submission) {
+      submission = await Submission.create({
+        companyId: test.companyId,
+        testId: invite.testId,
+        candidateId: invite.candidateId,
+        inviteId: invite._id,
+        answers: [],
+        status: "in_progress",
+        startedAt: new Date(),
+      });
+
+      invite.status = "started";
+      await invite.save();
+    }
+
+    const questions: any[] = [];
+    if (test && test.sections) {
+      for (const section of test.sections) {
+        if (section.questionIds && section.questionIds.length > 0) {
+          const qDocs = await Question.find({ _id: { $in: section.questionIds } });
+          for (const q of qDocs) {
+            const qObj = q.toObject();
+            qObj.id = qObj._id.toString();
+            if (qObj.options) {
+              qObj.options = qObj.options.map((o: any) => ({
+                id: o.id,
+                text: o.text,
+              }));
+            }
+            questions.push(qObj);
+          }
+        }
+      }
+    }
+
+    return res.status(201).json({
+      submission: { ...submission.toObject(), id: submission._id.toString() },
+      test: test ? { ...test.toObject(), id: test._id.toString() } : null,
+      questions,
+    });
+  } catch (error) {
+    console.error("Submission start error:", error);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// GET /api/submissions/:id
+router.get(
+  "/:id",
+  authenticateUser,
+  requireRole(["super_admin", "admin", "recruiter", "interviewer"]),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const submission = await Submission.findById(req.params.id)
+        .populate("testId")
+        .populate("candidateId")
+        .lean();
+
+      if (!submission) return res.status(404).json({ error: "Submission not found" });
+
+      const violations = await ViolationLog.find({ submissionId: submission._id }).lean();
+
+      const test: any = submission.testId;
+      let questions: any[] = [];
+      if (test && test.sections) {
+        const qIds = test.sections.flatMap((s: any) => s.questionIds || []);
+        questions = await Question.find({ _id: { $in: qIds } }).lean();
+      }
+
+      const candObj = submission.candidateId as any;
+      const testObj = submission.testId as any;
+
+      const mappedSub = {
+        ...submission,
+        id: submission._id.toString(),
+        candidate: candObj ? { ...candObj, id: candObj._id ? candObj._id.toString() : "" } : null,
+        test: testObj ? { ...testObj, id: testObj._id ? testObj._id.toString() : "" } : null,
+        violations: violations.map((v) => ({ ...v, id: v._id.toString() })),
+        questions: questions.map((q) => ({ ...q, id: q._id.toString() })),
+      };
+
+      return res.json({
+        submission: mappedSub,
+        candidate: mappedSub.candidate,
+        test: mappedSub.test,
+        questions: mappedSub.questions,
+        violations: mappedSub.violations,
+      });
+    } catch (error) {
+      console.error("Get Submission API error:", error);
+      return res.status(500).json({ error: "Internal Server Error" });
+    }
+  }
+);
+
+// PATCH /api/submissions/:id/answer
+router.patch("/:id/answer", async (req: Request, res: Response) => {
+  try {
+    const { questionId, answerText, selectedOptionIds, codeAnswer, isMarkedForReview } = req.body;
+    if (!questionId) return res.status(400).json({ error: "Question ID is required" });
+
+    const submission = await Submission.findById(req.params.id).select("status answers");
+    if (!submission) return res.status(404).json({ error: "Submission not found" });
+
+    if (submission.status !== "in_progress") {
+      return res.status(403).json({ error: "Cannot update answer for a completed submission" });
+    }
+
+    const qObjId = new mongoose.Types.ObjectId(questionId);
+    const existingIndex = submission.answers.findIndex(
+      (a: any) => a.questionId.toString() === questionId
+    );
+
+    if (existingIndex > -1) {
+      const updateFields: Record<string, any> = {};
+      if (answerText !== undefined) updateFields[`answers.${existingIndex}.answerText`] = answerText;
+      if (selectedOptionIds !== undefined) updateFields[`answers.${existingIndex}.selectedOptionIds`] = selectedOptionIds;
+      if (codeAnswer !== undefined) updateFields[`answers.${existingIndex}.codeAnswer`] = codeAnswer;
+      if (isMarkedForReview !== undefined) updateFields[`answers.${existingIndex}.isMarkedForReview`] = isMarkedForReview;
+
+      await Submission.updateOne({ _id: req.params.id }, { $set: updateFields });
+    } else {
+      await Submission.updateOne(
+        { _id: req.params.id },
+        {
+          $push: {
+            answers: {
+              questionId: qObjId,
+              answerText,
+              selectedOptionIds,
+              codeAnswer,
+              isMarkedForReview: isMarkedForReview || false,
+              timeSpentSeconds: 0,
+            },
+          },
+        }
+      );
+    }
+
+    return res.json({ success: true });
+  } catch (error) {
+    console.error("Save answer error:", error);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// POST /api/submissions/:id/grade
+router.post(
+  "/:id/grade",
+  authenticateUser,
+  requireRole(["super_admin", "admin", "interviewer"]),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const { manualScore } = req.body;
+      const submission = await Submission.findById(req.params.id);
+      if (!submission) return res.status(404).json({ error: "Submission not found" });
+
+      submission.manualScore = Number(manualScore) || 0;
+      submission.finalScore = (submission.autoScore || 0) + submission.manualScore;
+      submission.status = "graded";
+      await submission.save();
+
+      return res.json({ success: true, submission: { ...submission.toObject(), id: submission._id.toString() } });
+    } catch (error) {
+      console.error("Grade submission error:", error);
+      return res.status(500).json({ error: "Internal Server Error" });
+    }
+  }
+);
+
+// POST /api/submissions/:id/violation
+router.post("/:id/violation", async (req: Request, res: Response) => {
+  try {
+    const { type } = req.body;
+    if (!type) return res.status(400).json({ error: "Violation type is required" });
+
+    const submission = await Submission.findById(req.params.id);
+    if (!submission) return res.status(404).json({ error: "Submission not found" });
+
+    await ViolationLog.create({
+      submissionId: submission._id,
+      testId: submission.testId,
+      candidateId: submission.candidateId,
+      type,
+    });
+
+    return res.status(201).json({ success: true });
+  } catch (error) {
+    console.error("Violation log error:", error);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// POST /api/submissions/:id/webcam-snapshot
+router.post("/:id/webcam-snapshot", async (req: Request, res: Response) => {
+  try {
+    const { imageUrl, event } = req.body;
+    if (!imageUrl) return res.status(400).json({ error: "Image URL/data is required" });
+
+    const idStr = String(req.params.id);
+    const subId = mongoose.Types.ObjectId.isValid(idStr)
+      ? new mongoose.Types.ObjectId(idStr)
+      : idStr;
+
+    await Submission.updateOne(
+      { _id: subId },
+      {
+        $push: {
+          recordingSnapshots: {
+            $each: [
+              {
+                timestamp: new Date(),
+                imageUrl,
+                event: event || "snapshot",
+              },
+            ],
+            $slice: -15,
+          },
+        },
+      }
+    );
+
+    return res.status(201).json({ success: true });
+  } catch (error) {
+    console.error("Webcam snapshot API error:", error);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// POST /api/submissions/:id/submit
+router.post("/:id/submit", async (req: Request, res: Response) => {
+  try {
+    const { autoSubmitted } = req.body;
+    const submission = await Submission.findById(req.params.id);
+    if (!submission) return res.status(404).json({ error: "Submission not found" });
+
+    if (submission.status !== "in_progress") {
+      return res.status(400).json({ error: "Test already submitted" });
+    }
+
+    let autoScore = 0;
+    for (const answer of submission.answers) {
+      const question = await Question.findById(answer.questionId);
+      if (!question) continue;
+
+      if (["mcq_single", "mcq_multi", "true_false"].includes(question.type)) {
+        const correctOptions = question.options?.filter((o: any) => o.isCorrect).map((o: any) => o.id) || [];
+        const selectedOptions = answer.selectedOptionIds || [];
+
+        if (
+          correctOptions.length === selectedOptions.length &&
+          correctOptions.every((val: any) => selectedOptions.includes(val))
+        ) {
+          autoScore += question.marks;
+        }
+      }
+    }
+
+    submission.autoScore = autoScore;
+    submission.finalScore = autoScore;
+    submission.status = autoSubmitted ? "auto_submitted" : "submitted";
+    submission.submittedAt = new Date();
+    await submission.save();
+
+    const invite = await TestInvite.findById(submission.inviteId);
+    if (invite) {
+      invite.status = "completed";
+      await invite.save();
+    }
+
+    return res.status(201).json({ success: true, submission: { ...submission.toObject(), id: submission._id.toString() } });
+  } catch (error) {
+    console.error("Submit test error:", error);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+export default router;
