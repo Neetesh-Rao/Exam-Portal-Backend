@@ -4,6 +4,20 @@ import { authenticateUser, requireRole, AuthRequest } from "../middleware/auth.j
 
 const router = Router();
 
+// Helper filter for single-tenant / company-scoped matching
+const getTestFilter = (req: AuthRequest, testId?: string) => {
+  const filter: any = {};
+  if (testId) filter._id = testId;
+  if (req.user?.companyId) {
+    filter.$or = [
+      { companyId: req.user.companyId },
+      { companyId: { $exists: false } },
+      { companyId: null },
+    ];
+  }
+  return filter;
+};
+
 // GET /api/tests
 router.get(
   "/",
@@ -12,13 +26,12 @@ router.get(
   async (req: AuthRequest, res: Response) => {
     try {
       const { status, search } = req.query;
-      const query: any = {};
-      if (req.user?.companyId) query.companyId = req.user.companyId;
-      if (status) query.status = status;
-      if (search) query.title = { $regex: search as string, $options: "i" };
+      const filter = getTestFilter(req);
+      if (status) filter.status = status;
+      if (search) filter.title = { $regex: search as string, $options: "i" };
 
-      const count = await Test.countDocuments(query);
-      const rows = await Test.find(query).sort({ createdAt: -1 });
+      const count = await Test.countDocuments(filter);
+      const rows = await Test.find(filter).sort({ createdAt: -1 });
       const mapped = rows.map((t) => ({ ...t.toObject(), id: t._id.toString() }));
 
       return res.json({ tests: mapped, total: count });
@@ -40,7 +53,7 @@ router.post(
       if (!title) return res.status(400).json({ error: "Title is required" });
 
       const test = await Test.create({
-        companyId: req.user?.companyId,
+        companyId: req.user?.companyId || null,
         title,
         description: description || "",
         sections: sections || [],
@@ -72,7 +85,9 @@ router.get(
   requireRole(["super_admin", "admin", "recruiter", "interviewer"]),
   async (req: AuthRequest, res: Response) => {
     try {
-      const test = await Test.findOne({ _id: req.params.id, companyId: req.user?.companyId });
+      const testId = String(req.params.id);
+      const filter = getTestFilter(req, testId);
+      const test = await Test.findOne(filter);
       if (!test) return res.status(404).json({ error: "Test not found" });
       return res.json({ test: { ...test.toObject(), id: test._id.toString() } });
     } catch (error) {
@@ -89,8 +104,10 @@ router.patch(
   requireRole(["super_admin", "admin", "recruiter"]),
   async (req: AuthRequest, res: Response) => {
     try {
+      const testId = String(req.params.id);
+      const filter = getTestFilter(req, testId);
       const test = await Test.findOneAndUpdate(
-        { _id: req.params.id, companyId: req.user?.companyId },
+        filter,
         { $set: req.body },
         { new: true }
       );
@@ -110,7 +127,9 @@ router.delete(
   requireRole(["super_admin", "admin", "recruiter"]),
   async (req: AuthRequest, res: Response) => {
     try {
-      const test = await Test.findOneAndDelete({ _id: req.params.id, companyId: req.user?.companyId });
+      const testId = String(req.params.id);
+      const filter = getTestFilter(req, testId);
+      const test = await Test.findOneAndDelete(filter);
       if (!test) return res.status(404).json({ error: "Test not found" });
       return res.json({ success: true });
     } catch (error) {
@@ -127,8 +146,10 @@ router.post(
   requireRole(["super_admin", "admin", "recruiter"]),
   async (req: AuthRequest, res: Response) => {
     try {
+      const testId = String(req.params.id);
+      const filter = getTestFilter(req, testId);
       const test = await Test.findOneAndUpdate(
-        { _id: req.params.id, companyId: req.user?.companyId },
+        filter,
         { status: "published" },
         { new: true }
       );

@@ -1,5 +1,8 @@
 import { Router, Request, Response } from "express";
 import mongoose from "mongoose";
+import multer from "multer";
+import fs from "fs";
+import path from "path";
 import { Submission } from "../models/Submission.js";
 import { Candidate } from "../models/Candidate.js";
 import { Test } from "../models/Test.js";
@@ -10,6 +13,26 @@ import { authenticateUser, requireRole, AuthRequest } from "../middleware/auth.j
 import { uploadVideoToCloudinary } from "../lib/cloudinary.js";
 
 const router = Router();
+
+const uploadsDir = path.join(process.cwd(), "uploads");
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, uploadsDir);
+  },
+  filename: (_req, file, cb) => {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, `${file.fieldname}-${uniqueSuffix}.webm`);
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 200 * 1024 * 1024 }, // 200MB limit for recordings
+});
 
 // GET /api/submissions
 router.get(
@@ -24,6 +47,7 @@ router.get(
           $or: [
             { companyId: req.user.companyId },
             { companyId: { $exists: false } },
+            { companyId: null },
           ],
         };
       }
@@ -62,10 +86,10 @@ router.get(
 // POST /api/submissions/start
 router.post("/start", async (req: Request, res: Response) => {
   try {
-    const { token } = req.body;
-    if (!token) return res.status(400).json({ error: "Token is required" });
+    const rawToken = String(req.body.token || "").replace(/\//g, "").trim();
+    if (!rawToken) return res.status(400).json({ error: "Token is required" });
 
-    const invite = await TestInvite.findOne({ token });
+    const invite = await TestInvite.findOne({ token: rawToken });
     if (!invite) return res.json({ error: "Invalid token" });
 
     if (invite.status === "expired" || new Date() > new Date(invite.expiresAt)) {
@@ -73,31 +97,66 @@ router.post("/start", async (req: Request, res: Response) => {
         invite.status = "expired";
         await invite.save();
       }
-      return res.json({ error: "Invitation expired" });
+      return res.json({ error: "Invitation expired", expired: true });
     }
 
     if (invite.status === "completed") {
-      return res.json({ error: "Test already completed" });
+      return res.json({ error: "Test already completed", alreadySubmitted: true });
     }
 
     const test = await Test.findById(invite.testId);
     if (!test) return res.json({ error: "Test not found" });
 
-    let submission = await Submission.findOne({ testId: invite.testId, candidateId: invite.candidateId });
+    // Look up submission by inviteId OR (testId + candidateId)
+    let submission = await Submission.findOne({
+      $or: [
+        { inviteId: invite._id },
+        { testId: invite.testId, candidateId: invite.candidateId },
+      ],
+    });
 
     if (!submission) {
-      submission = await Submission.create({
-        companyId: test.companyId,
-        testId: invite.testId,
-        candidateId: invite.candidateId,
-        inviteId: invite._id,
-        answers: [],
-        status: "in_progress",
-        startedAt: new Date(),
-      });
+      try {
+        const createPayload: any = {
+          testId: invite.testId,
+          candidateId: invite.candidateId,
+          inviteId: invite._id,
+          answers: [],
+          status: "in_progress",
+          startedAt: new Date(),
+        };
+        // Only set companyId when it exists (single-tenant: may be absent)
+        if (test.companyId) {
+          createPayload.companyId = test.companyId;
+        }
 
-      invite.status = "started";
-      await invite.save();
+        submission = await Submission.create(createPayload);
+
+        invite.status = "started";
+        await invite.save();
+      } catch (err: any) {
+        if (err.code === 11000) {
+          submission = await Submission.findOne({ testId: invite.testId, candidateId: invite.candidateId });
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    if (submission && (submission.status === "submitted" || submission.status === "auto_submitted" || submission.status === "graded")) {
+      if (invite.status !== "completed") {
+        submission.status = "in_progress";
+        submission.answers = [];
+        submission.startedAt = new Date();
+        submission.submittedAt = undefined;
+        submission.inviteId = invite._id;
+        await submission.save();
+
+        invite.status = "started";
+        await invite.save();
+      } else {
+        return res.json({ error: "Test already completed", alreadySubmitted: true });
+      }
     }
 
     const questions: any[] = [];
@@ -176,6 +235,61 @@ router.get(
     } catch (error) {
       console.error("Get Submission API error:", error);
       return res.status(500).json({ error: "Internal Server Error" });
+    }
+  }
+);
+
+// POST /api/submissions/:id/upload-full-recordings
+router.post(
+  "/:id/upload-full-recordings",
+  upload.fields([
+    { name: "cameraVideo", maxCount: 1 },
+    { name: "screenVideo", maxCount: 1 },
+  ]),
+  async (req: Request, res: Response) => {
+    try {
+      const submissionId = req.params.id;
+      const submission = await Submission.findById(submissionId);
+      if (!submission) return res.status(404).json({ error: "Submission not found" });
+
+      const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
+      let videoRecordingUrl = submission.videoRecordingUrl;
+      let screenRecordingUrl = submission.screenRecordingUrl;
+
+      if (files?.cameraVideo?.[0]) {
+        const cameraFile = files.cameraVideo[0];
+        try {
+          videoRecordingUrl = await uploadVideoToCloudinary(cameraFile.path, "bitmax_proctoring_camera");
+        } catch (err) {
+          console.error("Camera video upload error:", err);
+        } finally {
+          if (fs.existsSync(cameraFile.path)) fs.unlinkSync(cameraFile.path);
+        }
+      }
+
+      if (files?.screenVideo?.[0]) {
+        const screenFile = files.screenVideo[0];
+        try {
+          screenRecordingUrl = await uploadVideoToCloudinary(screenFile.path, "bitmax_proctoring_screen");
+        } catch (err) {
+          console.error("Screen video upload error:", err);
+        } finally {
+          if (fs.existsSync(screenFile.path)) fs.unlinkSync(screenFile.path);
+        }
+      }
+
+      submission.videoRecordingUrl = videoRecordingUrl;
+      submission.screenRecordingUrl = screenRecordingUrl;
+      await submission.save();
+
+      return res.json({
+        success: true,
+        videoRecordingUrl,
+        screenRecordingUrl,
+      });
+    } catch (error) {
+      console.error("Upload full recordings API error:", error);
+      return res.status(500).json({ error: "Failed to upload video recordings to Cloudinary" });
     }
   }
 );
@@ -301,7 +415,7 @@ router.post("/:id/webcam-snapshot", async (req: Request, res: Response) => {
                 event: event || "snapshot",
               },
             ],
-            $slice: -15,
+            $slice: -25,
           },
         },
       }

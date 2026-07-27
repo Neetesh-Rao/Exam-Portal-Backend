@@ -4,6 +4,19 @@ import { authenticateUser, requireRole, AuthRequest } from "../middleware/auth.j
 
 const router = Router();
 
+const getQuestionFilter = (req: AuthRequest, questionId?: string) => {
+  const filter: any = {};
+  if (questionId) filter._id = questionId;
+  if (req.user?.companyId) {
+    filter.$or = [
+      { companyId: req.user.companyId },
+      { companyId: { $exists: false } },
+      { companyId: null },
+    ];
+  }
+  return filter;
+};
+
 // GET /api/questions
 router.get(
   "/",
@@ -12,7 +25,7 @@ router.get(
   async (req: AuthRequest, res: Response) => {
     try {
       const search = req.query.search as string;
-      const query: any = { companyId: req.user?.companyId };
+      const query = getQuestionFilter(req);
       if (search) {
         query.title = { $regex: search, $options: "i" };
       }
@@ -40,7 +53,7 @@ router.post(
     try {
       const body = req.body;
       const question = await Question.create({
-        companyId: req.user?.companyId,
+        companyId: req.user?.companyId || null,
         title: body.title,
         description: body.description,
         type: body.type,
@@ -67,7 +80,9 @@ router.get(
   requireRole(["super_admin", "admin", "interviewer"]),
   async (req: AuthRequest, res: Response) => {
     try {
-      const question = await Question.findOne({ _id: req.params.id, companyId: req.user?.companyId });
+      const questionId = String(req.params.id);
+      const filter = getQuestionFilter(req, questionId);
+      const question = await Question.findOne(filter);
       if (!question) return res.status(404).json({ error: "Question not found" });
 
       return res.json({ question: { ...question.toObject(), id: question._id.toString() } });
@@ -85,8 +100,10 @@ router.patch(
   requireRole(["super_admin", "admin"]),
   async (req: AuthRequest, res: Response) => {
     try {
+      const questionId = String(req.params.id);
+      const filter = getQuestionFilter(req, questionId);
       const question = await Question.findOneAndUpdate(
-        { _id: req.params.id, companyId: req.user?.companyId },
+        filter,
         { $set: req.body },
         { new: true }
       );
@@ -107,7 +124,9 @@ router.delete(
   requireRole(["super_admin", "admin"]),
   async (req: AuthRequest, res: Response) => {
     try {
-      const question = await Question.findOneAndDelete({ _id: req.params.id, companyId: req.user?.companyId });
+      const questionId = String(req.params.id);
+      const filter = getQuestionFilter(req, questionId);
+      const question = await Question.findOneAndDelete(filter);
       if (!question) return res.status(404).json({ error: "Question not found" });
 
       return res.json({ success: true });

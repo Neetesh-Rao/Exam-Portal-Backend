@@ -13,7 +13,11 @@ router.get(
   requireRole(["super_admin", "admin", "recruiter", "interviewer"]),
   async (req: AuthRequest, res: Response) => {
     try {
-      const candidates = await Candidate.find({ companyId: req.user?.companyId }).sort({ createdAt: -1 });
+      const filter: any = {};
+      if (req.user?.companyId) {
+        filter.companyId = req.user.companyId;
+      }
+      const candidates = await Candidate.find(filter).sort({ createdAt: -1 });
       const mapped = candidates.map((c) => ({
         ...c.toObject(),
         id: c._id.toString(),
@@ -38,7 +42,7 @@ router.post(
       if (!name || !email) return res.status(400).json({ error: "Name and email are required" });
 
       const candidate = await Candidate.create({
-        companyId: req.user?.companyId,
+        companyId: req.user?.companyId || null,
         name,
         email,
         phone,
@@ -60,7 +64,11 @@ router.get(
   requireRole(["super_admin", "admin", "recruiter", "interviewer"]),
   async (req: AuthRequest, res: Response) => {
     try {
-      const candidate = await Candidate.findOne({ _id: req.params.id, companyId: req.user?.companyId });
+      const filter: any = { _id: req.params.id };
+      if (req.user?.companyId) {
+        filter.companyId = req.user.companyId;
+      }
+      const candidate = await Candidate.findOne(filter);
       if (!candidate) return res.status(404).json({ error: "Candidate not found" });
 
       const submissions = await Submission.find({ candidateId: candidate._id })

@@ -1,10 +1,10 @@
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface ISubmission extends Document {
-  companyId: mongoose.Types.ObjectId;
+  companyId?: mongoose.Types.ObjectId;
   testId: mongoose.Types.ObjectId;
   candidateId: mongoose.Types.ObjectId;
-  inviteId: mongoose.Types.ObjectId;
+  inviteId?: mongoose.Types.ObjectId;
   answers: {
     questionId: mongoose.Types.ObjectId;
     answerText?: string;
@@ -32,10 +32,10 @@ export interface ISubmission extends Document {
 
 const SubmissionSchema = new Schema<ISubmission>(
   {
-    companyId: { type: Schema.Types.ObjectId, ref: 'Company', required: true },
+    companyId: { type: Schema.Types.ObjectId, ref: 'Company', required: false },
     testId: { type: Schema.Types.ObjectId, ref: 'Test', required: true },
     candidateId: { type: Schema.Types.ObjectId, ref: 'Candidate', required: true },
-    inviteId: { type: Schema.Types.ObjectId, ref: 'TestInvite', required: true },
+    inviteId: { type: Schema.Types.ObjectId, ref: 'TestInvite', required: false },
     answers: [
       {
         questionId: { type: Schema.Types.ObjectId, ref: 'Question', required: true },

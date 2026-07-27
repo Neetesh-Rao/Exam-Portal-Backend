@@ -1,8 +1,10 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import express from "express";
 import http from "http";
 import cors from "cors";
 import cookieParser from "cookie-parser";
-import dotenv from "dotenv";
 import { Server as SocketIOServer } from "socket.io";
 import { connectToDatabase } from "./config/db.js";
 
@@ -17,8 +19,6 @@ import analyticsRoutes from "./routes/analytics.routes.js";
 import notificationsRoutes from "./routes/notifications.routes.js";
 import liveMonitorRoutes from "./routes/liveMonitor.routes.js";
 import healthRoutes from "./routes/health.routes.js";
-
-dotenv.config();
 
 const app = express();
 const server = http.createServer(app);

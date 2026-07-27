@@ -12,7 +12,18 @@ router.get(
   requireRole(["super_admin", "admin", "recruiter", "interviewer"]),
   async (req: AuthRequest, res: Response) => {
     try {
-      const submissions = await Submission.find({ companyId: req.user?.companyId })
+      let query: any = {};
+      if (req.user?.companyId) {
+        query = {
+          $or: [
+            { companyId: req.user.companyId },
+            { companyId: { $exists: false } },
+            { companyId: null },
+          ],
+        };
+      }
+
+      const submissions = await Submission.find(query)
         .select("-recordingSnapshots")
         .populate("candidateId")
         .populate("testId")

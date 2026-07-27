@@ -1,33 +1,34 @@
 import { Router, Request, Response } from "express";
 import crypto from "crypto";
 import { TestInvite } from "../models/TestInvite.js";
-import { Test } from "../models/Test.js";
 import { Candidate } from "../models/Candidate.js";
+import { Test } from "../models/Test.js";
 import { authenticateUser, requireRole, AuthRequest } from "../middleware/auth.js";
+import { sendCandidateInviteEmail } from "../lib/email.js";
 
 const router = Router();
 
-// GET /api/invites
+// GET /api/invites - List invites
 router.get(
   "/",
   authenticateUser,
-  requireRole(["super_admin", "admin", "recruiter", "interviewer"]),
+  requireRole(["super_admin", "admin", "recruiter"]),
   async (req: AuthRequest, res: Response) => {
     try {
       const invites = await TestInvite.find()
-        .populate("candidateId")
         .populate("testId")
+        .populate("candidateId")
         .sort({ createdAt: -1 })
-        .limit(50);
+        .lean();
 
-      const mapped = invites.map((i) => ({
-        ...i.toObject(),
-        id: i._id.toString(),
-        test: i.testId ? { ...(i.testId as any).toObject(), id: (i.testId as any)._id.toString() } : null,
-        candidate: i.candidateId ? { ...(i.candidateId as any).toObject(), id: (i.candidateId as any)._id.toString() } : null,
-      }));
-
-      return res.json({ invites: mapped });
+      return res.json({
+        invites: invites.map((inv: any) => ({
+          ...inv,
+          id: inv._id.toString(),
+          test: inv.testId ? { ...inv.testId, id: inv.testId._id.toString() } : null,
+          candidate: inv.candidateId ? { ...inv.candidateId, id: inv.candidateId._id.toString() } : null,
+        })),
+      });
     } catch (error) {
       console.error("Get Invites API error:", error);
       return res.status(500).json({ error: "Internal Server Error" });
@@ -35,33 +36,41 @@ router.get(
   }
 );
 
-// POST /api/invites/bulk
+// POST /api/invites/bulk - Send invites to candidates with custom expiration
 router.post(
   "/bulk",
   authenticateUser,
   requireRole(["super_admin", "admin", "recruiter"]),
   async (req: AuthRequest, res: Response) => {
     try {
-      const { testId, candidateEmails, expiresInDays = 7 } = req.body;
-      if (!testId || !candidateEmails || !candidateEmails.length) {
-        return res.status(400).json({ error: "Missing required fields" });
+      const { testId, candidateEmails, expiresInHours, expiresInDays } = req.body;
+
+      if (!testId || !candidateEmails || !Array.isArray(candidateEmails) || candidateEmails.length === 0) {
+        return res.status(400).json({ error: "Test ID and candidate emails are required" });
       }
 
-      const test = await Test.findOne({ _id: testId, companyId: req.user?.companyId });
+      const test = await Test.findById(testId);
       if (!test) return res.status(404).json({ error: "Test not found" });
 
       const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + expiresInDays);
+      if (expiresInHours && Number(expiresInHours) > 0) {
+        expiresAt.setTime(expiresAt.getTime() + Number(expiresInHours) * 60 * 60 * 1000);
+      } else {
+        const days = Number(expiresInDays) || 7;
+        expiresAt.setTime(expiresAt.getTime() + days * 24 * 60 * 60 * 1000);
+      }
 
       const createdInvites = [];
+      const clientUrl = process.env.CLIENT_URL || "http://localhost:3000";
 
       for (const email of candidateEmails) {
-        let candidate = await Candidate.findOne({ email, companyId: req.user?.companyId });
+        const cleanEmail = String(email).trim().toLowerCase();
+        let candidate = await Candidate.findOne({ email: cleanEmail });
         if (!candidate) {
           candidate = await Candidate.create({
-            companyId: req.user?.companyId,
-            email,
-            name: email.split("@")[0],
+            companyId: null,
+            email: cleanEmail,
+            name: cleanEmail.split("@")[0],
           });
         }
 
@@ -75,9 +84,22 @@ router.post(
           status: "invited",
         });
 
+        const inviteLink = `${clientUrl}/take-test/${token}`;
+
+        // Send Email asynchronously via Nodemailer
+        sendCandidateInviteEmail({
+          to: candidate.email,
+          candidateName: candidate.name,
+          testTitle: test.title,
+          inviteLink,
+          expiresAt,
+        }).catch((err) => console.error("Async email error:", err));
+
         createdInvites.push({
           token: invite.token,
           email: candidate.email,
+          inviteLink,
+          expiresAt,
         });
       }
 
@@ -92,7 +114,8 @@ router.post(
 // GET /api/invites/:token/validate
 router.get("/:token/validate", async (req: Request, res: Response) => {
   try {
-    const invite = await TestInvite.findOne({ token: req.params.token });
+    const rawToken = String(req.params.token || "").replace(/\//g, "").trim();
+    const invite = await TestInvite.findOne({ token: rawToken });
     if (!invite) return res.json({ error: "Invalid invitation link." });
 
     if (invite.status === "expired" || new Date() > new Date(invite.expiresAt)) {
@@ -104,7 +127,7 @@ router.get("/:token/validate", async (req: Request, res: Response) => {
     }
 
     if (invite.status === "completed") {
-      return res.json({ error: "This test has already been completed." });
+      return res.json({ error: "This test has already been completed.", alreadySubmitted: true });
     }
 
     const test = await Test.findById(invite.testId);
@@ -119,7 +142,7 @@ router.get("/:token/validate", async (req: Request, res: Response) => {
       candidate: { ...candidate.toObject(), id: candidate._id.toString() },
     });
   } catch (error) {
-    console.error("Invite validate API error:", error);
+    console.error("Validate Invite API error:", error);
     return res.status(500).json({ error: "Internal Server Error" });
   }
 });
