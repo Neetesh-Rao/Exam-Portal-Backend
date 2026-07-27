@@ -13,7 +13,7 @@ export async function comparePassword(password: string, hash: string): Promise<b
 }
 
 export function generateAccessToken(payload: { userId: string; role: string; companyId: string | null }): string {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: "15m" });
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: "24h" });
 }
 
 export function generateRefreshToken(payload: { userId: string }): string {
