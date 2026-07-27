@@ -28,7 +28,7 @@ const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:3000";
 // Socket.io initialization
 const io = new SocketIOServer(server, {
   cors: {
-    origin: [CLIENT_URL, "http://localhost:3000", "http://127.0.0.1:3000"],
+    origin: [CLIENT_URL, "http://localhost:3000", "http://127.0.0.1:3000", "*"],
     credentials: true,
   },
 });
@@ -59,7 +59,10 @@ io.on("connection", (socket) => {
 // Middlewares
 app.use(
   cors({
-    origin: [CLIENT_URL, "http://localhost:3000", "http://127.0.0.1:3000"],
+    origin: (origin, callback) => {
+      // Allow requests from all origins in production or match CLIENT_URL
+      callback(null, true);
+    },
     credentials: true,
   })
 );
@@ -69,6 +72,36 @@ app.use(cookieParser());
 
 // Connect to MongoDB Database
 connectToDatabase().catch((err) => console.error("Database connection failure:", err));
+
+// Root Health & Welcome Routes (for browser testing)
+app.get("/", (req, res) => {
+  res.json({
+    status: "online",
+    message: "🚀 Exam Portal Express API Backend is running successfully!",
+    health: "/api/health",
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.get("/api", (req, res) => {
+  res.json({
+    status: "online",
+    message: "🚀 Exam Portal Express API Backend is running successfully!",
+    endpoints: [
+      "/api/health",
+      "/api/auth",
+      "/api/tests",
+      "/api/questions",
+      "/api/submissions",
+      "/api/candidates",
+      "/api/invites",
+      "/api/analytics",
+      "/api/notifications",
+      "/api/live-monitor",
+    ],
+    timestamp: new Date().toISOString(),
+  });
+});
 
 // Mount REST API routes
 app.use("/api/health", healthRoutes);
@@ -83,6 +116,10 @@ app.use("/api/analytics", analyticsRoutes);
 app.use("/api/notifications", notificationsRoutes);
 app.use("/api/live-monitor", liveMonitorRoutes);
 
-server.listen(PORT, () => {
-  console.log(`🚀 Express Backend Server running on http://localhost:${PORT}`);
-});
+if (process.env.NODE_ENV !== "production" || !process.env.VERCEL) {
+  server.listen(PORT, () => {
+    console.log(`🚀 Express Backend Server running on http://localhost:${PORT}`);
+  });
+}
+
+export default app;
