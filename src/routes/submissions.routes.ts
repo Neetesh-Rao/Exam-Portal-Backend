@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import mongoose from "mongoose";
 import multer from "multer";
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { Submission } from "../models/Submission.js";
 import { Candidate } from "../models/Candidate.js";
@@ -14,24 +15,11 @@ import { uploadVideoToCloudinary } from "../lib/cloudinary.js";
 
 const router = Router();
 
-const uploadsDir = path.join(process.cwd(), "uploads");
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    cb(null, uploadsDir);
-  },
-  filename: (_req, file, cb) => {
-    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    cb(null, `${file.fieldname}-${uniqueSuffix}.webm`);
-  },
-});
-
+// Use memory storage — Vercel serverless filesystem is read-only at /var/task
+// Files are buffered in memory and written to os.tmpdir() only when uploading to Cloudinary
 const upload = multer({
-  storage,
-  limits: { fileSize: 200 * 1024 * 1024 }, // 200MB limit for recordings
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 200 * 1024 * 1024 }, // 200MB
 });
 
 // GET /api/submissions
@@ -256,25 +244,30 @@ router.post(
       let videoRecordingUrl = submission.videoRecordingUrl;
       let screenRecordingUrl = submission.screenRecordingUrl;
 
-      if (files?.cameraVideo?.[0]) {
+      // Write buffer to os.tmpdir() (writable on Vercel), upload, then clean up
+      if (files?.cameraVideo?.[0] && files.cameraVideo[0].buffer) {
         const cameraFile = files.cameraVideo[0];
+        const tmpPath = path.join(os.tmpdir(), `camera-${Date.now()}.webm`);
         try {
-          videoRecordingUrl = await uploadVideoToCloudinary(cameraFile.path, "bitmax_proctoring_camera");
+          fs.writeFileSync(tmpPath, cameraFile.buffer);
+          videoRecordingUrl = await uploadVideoToCloudinary(tmpPath, "bitmax_proctoring_camera");
         } catch (err) {
           console.error("Camera video upload error:", err);
         } finally {
-          if (fs.existsSync(cameraFile.path)) fs.unlinkSync(cameraFile.path);
+          if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
         }
       }
 
-      if (files?.screenVideo?.[0]) {
+      if (files?.screenVideo?.[0] && files.screenVideo[0].buffer) {
         const screenFile = files.screenVideo[0];
+        const tmpPath = path.join(os.tmpdir(), `screen-${Date.now()}.webm`);
         try {
-          screenRecordingUrl = await uploadVideoToCloudinary(screenFile.path, "bitmax_proctoring_screen");
+          fs.writeFileSync(tmpPath, screenFile.buffer);
+          screenRecordingUrl = await uploadVideoToCloudinary(tmpPath, "bitmax_proctoring_screen");
         } catch (err) {
           console.error("Screen video upload error:", err);
         } finally {
-          if (fs.existsSync(screenFile.path)) fs.unlinkSync(screenFile.path);
+          if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
         }
       }
 
@@ -293,6 +286,7 @@ router.post(
     }
   }
 );
+
 
 // PATCH /api/submissions/:id/answer
 router.patch("/:id/answer", async (req: Request, res: Response) => {
