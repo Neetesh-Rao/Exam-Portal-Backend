@@ -60,7 +60,6 @@ io.on("connection", (socket) => {
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests from all origins in production or match CLIENT_URL
       callback(null, true);
     },
     credentials: true,
@@ -70,10 +69,7 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 app.use(cookieParser());
 
-// Connect to MongoDB Database
-connectToDatabase().catch((err) => console.error("Database connection failure:", err));
-
-// Root Health & Welcome Routes (for browser testing)
+// Root Health & Welcome Routes (fast response)
 app.get("/", (req, res) => {
   res.json({
     status: "online",
@@ -101,6 +97,20 @@ app.get("/api", (req, res) => {
     ],
     timestamp: new Date().toISOString(),
   });
+});
+
+// Middleware: Ensure DB Connection for all API routes before execution
+app.use(async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    next();
+  } catch (err: any) {
+    console.error("Database connection error in middleware:", err);
+    res.status(500).json({
+      error: "Database connection failure. Please make sure your current IP address is on your MongoDB Atlas IP whitelist (0.0.0.0/0).",
+      details: err?.message,
+    });
+  }
 });
 
 // Mount REST API routes
