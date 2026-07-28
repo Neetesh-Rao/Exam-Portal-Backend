@@ -32,18 +32,30 @@ router.get(
   async (req: AuthRequest, res: Response) => {
     try {
       const search = req.query.search as string;
+      const category = req.query.category as string;
       const query = getQuestionFilter(req);
+
       if (search) {
         query.title = { $regex: search, $options: "i" };
       }
 
+      if (category && category !== "All") {
+        query.category = category;
+      }
+
       const questions = await Question.find(query).sort({ createdAt: -1 });
+
+      const baseFilter = getQuestionFilter(req);
+      const categoriesRaw = await Question.distinct("category", baseFilter);
+      const categories = ["All", ...categoriesRaw.filter(Boolean)];
+
       const mapped = questions.map((q) => ({
         ...q.toObject(),
         id: q._id.toString(),
+        category: q.category || "General",
       }));
 
-      return res.json({ questions: mapped });
+      return res.json({ questions: mapped, categories });
     } catch (error) {
       console.error("Questions API error:", error);
       return res.status(500).json({ error: "Internal Server Error" });
@@ -61,14 +73,17 @@ router.post(
       const body = req.body;
       const question = await Question.create({
         companyId: req.user?.companyId || null,
+        category: body.category || "General",
         title: body.title,
         description: body.description,
         type: body.type,
-        difficulty: body.difficulty,
+        difficulty: body.difficulty || "medium",
         marks: body.marks || 10,
-        testCases: body.testCases || [],
+        negativeMarks: body.negativeMarks || 0,
+        tags: body.tags || [],
         options: body.options || [],
-        correctOptionIndex: body.correctOptionIndex,
+        codeConfig: body.codeConfig || null,
+        correctTextAnswer: body.correctTextAnswer,
         createdBy: req.user?.userId,
       });
 
@@ -134,7 +149,6 @@ router.delete(
       const questionId = String(req.params.id);
       console.log(`Deleting question ID: ${questionId}`);
 
-      // Try deleting by _id or filter
       let question = null;
       if (mongoose.Types.ObjectId.isValid(questionId)) {
         question = await Question.findByIdAndDelete(questionId);
@@ -144,11 +158,9 @@ router.delete(
       }
 
       if (!question) {
-        console.warn(`Question not found for deletion: ${questionId}`);
         return res.status(404).json({ error: "Question not found" });
       }
 
-      console.log(`Successfully deleted question: ${questionId}`);
       return res.json({ success: true, message: "Question deleted successfully" });
     } catch (error) {
       console.error("Delete Question API error:", error);

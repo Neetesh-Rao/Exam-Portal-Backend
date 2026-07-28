@@ -2,6 +2,7 @@ import mongoose, { Schema, Document } from "mongoose";
 
 export interface IQuestion extends Document {
   companyId?: mongoose.Types.ObjectId;
+  category: string;
   type: 'mcq_single' | 'mcq_multi' | 'text_area' | 'fill_blank' | 'true_false' | 'match_following' | 'coding' | 'file_upload' | 'audio_response';
   title: string;
   description?: string;
@@ -21,6 +22,7 @@ export interface IQuestion extends Document {
 const QuestionSchema = new Schema<IQuestion>(
   {
     companyId: { type: Schema.Types.ObjectId, ref: 'Company' },
+    category: { type: String, default: "General", index: true },
     type: {
       type: String,
       enum: ['mcq_single', 'mcq_multi', 'text_area', 'fill_blank', 'true_false', 'match_following', 'coding', 'file_upload', 'audio_response'],
