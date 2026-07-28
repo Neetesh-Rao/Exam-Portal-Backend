@@ -47,21 +47,33 @@ router.get(
         .sort({ createdAt: -1 })
         .lean();
 
-      const mapped = submissions.map((s: any) => {
-        const candObj = s.candidateId ? s.candidateId : null;
-        const testObj = s.testId ? s.testId : null;
+      const mapped = await Promise.all(
+        submissions.map(async (s: any) => {
+          const candObj = s.candidateId ? s.candidateId : null;
+          const testObj = s.testId ? s.testId : null;
 
-        return {
-          ...s,
-          id: s._id.toString(),
-          candidate: candObj ? { ...candObj, id: candObj._id ? candObj._id.toString() : "" } : null,
-          test: testObj ? { ...testObj, id: testObj._id ? testObj._id.toString() : "" } : null,
-          finalScore: s.finalScore ?? s.autoScore ?? 0,
-          autoScore: s.autoScore ?? 0,
-          manualScore: s.manualScore ?? 0,
-          totalMarks: testObj?.totalMarks || 100,
-        };
-      });
+          let totalMarks = 0;
+          if (testObj && testObj.sections) {
+            const qIds = testObj.sections.flatMap((sec: any) => sec.questionIds || []);
+            if (qIds.length > 0) {
+              const qDocs = await Question.find({ _id: { $in: qIds } }).select("marks").lean();
+              totalMarks = (qDocs as any[]).reduce((sum: number, q: any) => sum + (q.marks || 1), 0);
+            }
+          }
+          if (totalMarks === 0) totalMarks = 100;
+
+          return {
+            ...s,
+            id: s._id.toString(),
+            candidate: candObj ? { ...candObj, id: candObj._id ? candObj._id.toString() : "" } : null,
+            test: testObj ? { ...testObj, id: testObj._id ? testObj._id.toString() : "" } : null,
+            finalScore: s.finalScore ?? s.autoScore ?? 0,
+            autoScore: s.autoScore ?? 0,
+            manualScore: s.manualScore ?? 0,
+            totalMarks,
+          };
+        })
+      );
 
       return res.json({ submissions: mapped });
     } catch (error) {
@@ -204,9 +216,15 @@ router.get(
       const candObj = submission.candidateId as any;
       const testObj = submission.testId as any;
 
+      // Calculate real totalMarks from question marks (sum of all question marks in test)
+      const totalMarks = questions.length > 0
+        ? questions.reduce((sum: number, q: any) => sum + (q.marks || 1), 0)
+        : (testObj?.totalMarks || 100);
+
       const mappedSub = {
         ...submission,
         id: submission._id.toString(),
+        totalMarks,
         candidate: candObj ? { ...candObj, id: candObj._id ? candObj._id.toString() : "" } : null,
         test: testObj ? { ...testObj, id: testObj._id ? testObj._id.toString() : "" } : null,
         violations: violations.map((v) => ({ ...v, id: v._id.toString() })),
@@ -219,6 +237,7 @@ router.get(
         test: mappedSub.test,
         questions: mappedSub.questions,
         violations: mappedSub.violations,
+        totalMarks,
       });
     } catch (error) {
       console.error("Get Submission API error:", error);
@@ -359,16 +378,55 @@ router.post(
   requireRole(["super_admin", "admin", "interviewer"]),
   async (req: AuthRequest, res: Response) => {
     try {
-      const { manualScore } = req.body;
-      const submission = await Submission.findById(req.params.id);
+      const { questionGrades, manualScore } = req.body;
+      const submission = await Submission.findById(req.params.id).populate("testId");
       if (!submission) return res.status(404).json({ error: "Submission not found" });
 
-      submission.manualScore = Number(manualScore) || 0;
-      submission.finalScore = (submission.autoScore || 0) + submission.manualScore;
+      const testObj: any = submission.testId;
+      let totalMarks = 100;
+      if (testObj && testObj.sections) {
+        const qIds = testObj.sections.flatMap((sec: any) => sec.questionIds || []);
+        if (qIds.length > 0) {
+          const qDocs = await Question.find({ _id: { $in: qIds } }).select("marks").lean();
+          totalMarks = (qDocs as any[]).reduce((sum: number, q: any) => sum + (q.marks || 1), 0) || 100;
+        }
+      }
+
+      if (Array.isArray(questionGrades) && questionGrades.length > 0) {
+        // Per-question grading: validate each question's marks against its max
+        const qIds = questionGrades.map((qg: any) => qg.questionId);
+        const questions = await Question.find({ _id: { $in: qIds } }).select("marks").lean();
+        const qMap = new Map((questions as any[]).map((q: any) => [q._id.toString(), q]));
+
+        let computedScore = 0;
+        for (const answer of (submission as any).answers) {
+          const qIdStr = answer.questionId.toString();
+          const qObj: any = qMap.get(qIdStr);
+          const qMaxMarks = qObj?.marks || 1;
+          const gradeItem = questionGrades.find((qg: any) => String(qg.questionId) === qIdStr);
+          if (gradeItem !== undefined) {
+            // Clamp: 0 <= marks <= question's own max marks
+            const assigned = Math.min(qMaxMarks, Math.max(0, Number(gradeItem.marksObtained) || 0));
+            answer.marksObtained = assigned;
+          }
+          computedScore += (answer.marksObtained || 0);
+        }
+
+        // Final score must not exceed total test marks
+        submission.finalScore = Math.min(totalMarks, Math.max(0, computedScore));
+        submission.manualScore = Math.max(0, submission.finalScore - (submission.autoScore || 0));
+      } else {
+        // Simple manual total override
+        const assignedManual = Math.max(0, Number(manualScore) || 0);
+        const newFinal = Math.min(totalMarks, (submission.autoScore || 0) + assignedManual);
+        submission.manualScore = assignedManual;
+        submission.finalScore = newFinal;
+      }
+
       submission.status = "graded";
       await submission.save();
 
-      return res.json({ success: true, submission: { ...submission.toObject(), id: submission._id.toString() } });
+      return res.json({ success: true, submission: { ...submission.toObject(), id: submission._id.toString(), totalMarks } });
     } catch (error) {
       console.error("Grade submission error:", error);
       return res.status(500).json({ error: "Internal Server Error" });
@@ -461,7 +519,7 @@ router.post("/:id/submit", async (req: Request, res: Response) => {
     const qMap = new Map(questions.map((q: any) => [q._id.toString(), q]));
 
     let autoScore = 0;
-    for (const answer of submission.answers) {
+    for (const answer of (submission as any).answers) {
       const question = qMap.get(answer.questionId?.toString());
       if (!question) continue;
 
@@ -473,8 +531,14 @@ router.post("/:id/submit", async (req: Request, res: Response) => {
           correctOptions.length === selectedOptions.length &&
           correctOptions.every((val: any) => selectedOptions.includes(val))
         ) {
+          answer.marksObtained = question.marks || 1;
           autoScore += (question.marks || 1);
+        } else {
+          answer.marksObtained = 0;
         }
+      } else {
+        // Text/coding/fill_blank — awaits manual grading
+        answer.marksObtained = 0;
       }
     }
 

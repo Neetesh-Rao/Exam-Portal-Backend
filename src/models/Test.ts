@@ -11,6 +11,7 @@ export interface ITest extends Document {
     randomizeQuestions: boolean;
   }[];
   totalDurationSeconds: number;
+  totalMarks?: number;
   passPercentage: number;
   proctoringConfig: {
     tabSwitchLimit: number;
@@ -39,6 +40,7 @@ const TestSchema = new Schema<ITest>(
       },
     ],
     totalDurationSeconds: { type: Number, required: true },
+    totalMarks: { type: Number },
     passPercentage: { type: Number, required: true, default: 50 },
     proctoringConfig: {
       tabSwitchLimit: { type: Number, default: 3 },
