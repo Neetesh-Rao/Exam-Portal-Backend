@@ -227,7 +227,7 @@ router.get(
   }
 );
 
-// POST /api/submissions/:id/upload-full-recordings
+// POST /api/submissions/:id/upload-full-recordings (Lightweight fallback)
 router.post(
   "/:id/upload-full-recordings",
   upload.fields([
@@ -235,124 +235,38 @@ router.post(
     { name: "screenVideo", maxCount: 1 },
   ]),
   async (req: Request, res: Response) => {
-    try {
-      const submissionId = req.params.id;
-      const submission = await Submission.findById(submissionId);
-      if (!submission) return res.status(404).json({ error: "Submission not found" });
-
-      const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
-      let videoRecordingUrl = submission.videoRecordingUrl;
-      let screenRecordingUrl = submission.screenRecordingUrl;
-
-      // Handle camera video file / buffer
-      if (files?.cameraVideo?.[0] && files.cameraVideo[0].buffer) {
-        const cameraFile = files.cameraVideo[0];
-        const tmpPath = path.join(os.tmpdir(), `camera-${Date.now()}.webm`);
-        try {
-          fs.writeFileSync(tmpPath, cameraFile.buffer);
-          videoRecordingUrl = await uploadVideoToCloudinary(tmpPath, "bitmax_proctoring_camera");
-        } catch (err) {
-          console.error("Camera video file upload error:", err);
-        } finally {
-          if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-        }
-      } else if (req.body?.cameraVideoBase64) {
-        try {
-          videoRecordingUrl = await uploadVideoToCloudinary(req.body.cameraVideoBase64, "bitmax_proctoring_camera");
-        } catch (err) {
-          console.error("Camera video base64 upload error:", err);
-        }
-      }
-
-      // Handle screen video file / buffer
-      if (files?.screenVideo?.[0] && files.screenVideo[0].buffer) {
-        const screenFile = files.screenVideo[0];
-        const tmpPath = path.join(os.tmpdir(), `screen-${Date.now()}.webm`);
-        try {
-          fs.writeFileSync(tmpPath, screenFile.buffer);
-          screenRecordingUrl = await uploadVideoToCloudinary(tmpPath, "bitmax_proctoring_screen");
-        } catch (err) {
-          console.error("Screen video file upload error:", err);
-        } finally {
-          if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-        }
-      } else if (req.body?.screenVideoBase64) {
-        try {
-          screenRecordingUrl = await uploadVideoToCloudinary(req.body.screenVideoBase64, "bitmax_proctoring_screen");
-        } catch (err) {
-          console.error("Screen video base64 upload error:", err);
-        }
-      }
-
-      submission.videoRecordingUrl = videoRecordingUrl;
-      submission.screenRecordingUrl = screenRecordingUrl;
-
-      // Push to recordingsHistory archive array
-      if (!submission.recordingsHistory) {
-        submission.recordingsHistory = [];
-      }
-
-      if (videoRecordingUrl && !submission.recordingsHistory.some((r) => r.url === videoRecordingUrl)) {
-        submission.recordingsHistory.push({
-          type: "camera",
-          url: videoRecordingUrl,
-          timestamp: new Date(),
-          event: "Camera Stream Recording",
-        });
-      }
-
-      if (screenRecordingUrl && !submission.recordingsHistory.some((r) => r.url === screenRecordingUrl)) {
-        submission.recordingsHistory.push({
-          type: "screen",
-          url: screenRecordingUrl,
-          timestamp: new Date(),
-          event: "Screen Stream Recording",
-        });
-      }
-
-      await submission.save();
-
-      console.log(`✅ Saved recordings to Submission ${submissionId}: Camera=${videoRecordingUrl}, Screen=${screenRecordingUrl}`);
-
-      return res.json({
-        success: true,
-        videoRecordingUrl,
-        screenRecordingUrl,
-        recordingsHistory: submission.recordingsHistory,
-      });
-    } catch (error) {
-      console.error("Upload full recordings API error:", error);
-      return res.status(500).json({ error: "Failed to upload video recordings to Cloudinary" });
-    }
+    return res.json({
+      success: true,
+      message: "Proctoring active with periodic webcam & screen snapshots",
+    });
   }
 );
 
 // GET /api/submissions/:id/recordings - Fetch all historical recordings & snapshots for a submission
 router.get("/:id/recordings", async (req: Request, res: Response) => {
   try {
-    const submission = await Submission.findById(req.params.id)
-      .populate("candidateId", "name email phone position")
-      .populate("testId", "title description totalDurationSeconds")
-      .lean();
+    const submissionId = req.params.id;
+    const submission = await Submission.findById(submissionId)
+      .populate("candidateId", "name email avatar")
+      .populate("testId", "title description");
 
     if (!submission) return res.status(404).json({ error: "Submission not found" });
 
     const snapshots = submission.recordingSnapshots || [];
     const history = submission.recordingsHistory || [];
 
-    // Build unified timeline of all video & snapshot recordings with timestamps
     const unifiedRecordings = [
       ...(submission.videoRecordingUrl ? [{
         type: "camera",
         url: submission.videoRecordingUrl,
-        timestamp: submission.submittedAt || submission.createdAt,
-        title: "Webcam Camera Recording Video",
+        timestamp: submission.startedAt || submission.createdAt,
+        title: "Candidate Camera Capture",
       }] : []),
       ...(submission.screenRecordingUrl ? [{
         type: "screen",
         url: submission.screenRecordingUrl,
         timestamp: submission.submittedAt || submission.createdAt,
-        title: "Candidate Screen Capture Video",
+        title: "Candidate Screen Capture",
       }] : []),
       ...history.map((h: any) => ({
         type: h.type,
@@ -539,12 +453,16 @@ router.post("/:id/submit", async (req: Request, res: Response) => {
     if (!submission) return res.status(404).json({ error: "Submission not found" });
 
     if (submission.status !== "in_progress") {
-      return res.status(400).json({ error: "Test already submitted" });
+      return res.status(200).json({ success: true, message: "Test already submitted", submission });
     }
+
+    const qIds = submission.answers.map((a: any) => a.questionId).filter(Boolean);
+    const questions = await Question.find({ _id: { $in: qIds } }).select("type options marks");
+    const qMap = new Map(questions.map((q: any) => [q._id.toString(), q]));
 
     let autoScore = 0;
     for (const answer of submission.answers) {
-      const question = await Question.findById(answer.questionId);
+      const question = qMap.get(answer.questionId?.toString());
       if (!question) continue;
 
       if (["mcq_single", "mcq_multi", "true_false"].includes(question.type)) {
@@ -555,7 +473,7 @@ router.post("/:id/submit", async (req: Request, res: Response) => {
           correctOptions.length === selectedOptions.length &&
           correctOptions.every((val: any) => selectedOptions.includes(val))
         ) {
-          autoScore += question.marks;
+          autoScore += (question.marks || 1);
         }
       }
     }
@@ -566,13 +484,15 @@ router.post("/:id/submit", async (req: Request, res: Response) => {
     submission.submittedAt = new Date();
     await submission.save();
 
-    const invite = await TestInvite.findById(submission.inviteId);
-    if (invite) {
-      invite.status = "completed";
-      await invite.save();
+    if (submission.inviteId) {
+      const invite = await TestInvite.findById(submission.inviteId);
+      if (invite) {
+        invite.status = "completed";
+        await invite.save();
+      }
     }
 
-    return res.status(201).json({ success: true, submission: { ...submission.toObject(), id: submission._id.toString() } });
+    return res.status(200).json({ success: true, submission: { ...submission.toObject(), id: submission._id.toString() } });
   } catch (error) {
     console.error("Submit test error:", error);
     return res.status(500).json({ error: "Internal Server Error" });
