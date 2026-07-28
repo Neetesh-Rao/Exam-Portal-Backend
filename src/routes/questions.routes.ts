@@ -112,7 +112,7 @@ router.patch(
       const question = await Question.findOneAndUpdate(
         filter,
         { $set: req.body },
-        { new: true }
+        { returnDocument: "after" }
       );
       if (!question) return res.status(404).json({ error: "Question not found" });
 

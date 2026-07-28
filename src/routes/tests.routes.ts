@@ -109,7 +109,7 @@ router.patch(
       const test = await Test.findOneAndUpdate(
         filter,
         { $set: req.body },
-        { new: true }
+        { returnDocument: "after" }
       );
       if (!test) return res.status(404).json({ error: "Test not found" });
       return res.json({ test: { ...test.toObject(), id: test._id.toString() } });
@@ -151,7 +151,7 @@ router.post(
       const test = await Test.findOneAndUpdate(
         filter,
         { status: "published" },
-        { new: true }
+        { returnDocument: "after" }
       );
       if (!test) return res.status(404).json({ error: "Test not found" });
       return res.json({ test: { ...test.toObject(), id: test._id.toString() } });

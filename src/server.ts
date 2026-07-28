@@ -132,6 +132,7 @@ app.use("/api/live-monitor", liveMonitorRoutes);
 app.use("/api/webhooks", webhooksRoutes);
 
 if (process.env.NODE_ENV !== "production" || !process.env.VERCEL) {
+  connectToDatabase().catch((err) => console.error("Initial DB connect error:", err));
   server.listen(PORT, () => {
     console.log(`🚀 Express Backend Server running on http://localhost:${PORT}`);
   });
