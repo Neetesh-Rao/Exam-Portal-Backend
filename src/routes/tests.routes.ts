@@ -87,7 +87,7 @@ router.get(
     try {
       const testId = String(req.params.id);
       const filter = getTestFilter(req, testId);
-      const test = await Test.findOne(filter);
+      const test = await Test.findOne(filter).populate("sections.questionIds");
       if (!test) return res.status(404).json({ error: "Test not found" });
       return res.json({ test: { ...test.toObject(), id: test._id.toString() } });
     } catch (error) {
