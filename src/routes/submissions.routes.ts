@@ -11,7 +11,7 @@ import { Question } from "../models/Question.js";
 import { TestInvite } from "../models/TestInvite.js";
 import { ViolationLog } from "../models/ViolationLog.js";
 import { authenticateUser, requireRole, AuthRequest } from "../middleware/auth.js";
-import { uploadVideoToCloudinary } from "../lib/cloudinary.js";
+import { uploadVideoToCloudinary, uploadImageToCloudinary } from "../lib/cloudinary.js";
 
 const router = Router();
 
@@ -397,6 +397,16 @@ router.post("/:id/webcam-snapshot", async (req: Request, res: Response) => {
       ? new mongoose.Types.ObjectId(idStr)
       : idStr;
 
+    // Convert base64 image data to Cloudinary CDN URL if needed
+    let finalImageUrl = imageUrl;
+    if (typeof imageUrl === "string" && imageUrl.startsWith("data:image/")) {
+      try {
+        finalImageUrl = await uploadImageToCloudinary(imageUrl, "bitmax_webcam_snapshots");
+      } catch (e) {
+        console.warn("Snapshot Cloudinary upload error, storing base64 fallback:", e);
+      }
+    }
+
     await Submission.updateOne(
       { _id: subId },
       {
@@ -405,17 +415,17 @@ router.post("/:id/webcam-snapshot", async (req: Request, res: Response) => {
             $each: [
               {
                 timestamp: new Date(),
-                imageUrl,
+                imageUrl: finalImageUrl,
                 event: event || "snapshot",
               },
             ],
-            $slice: -25,
+            $slice: -50,
           },
         },
       }
     );
 
-    return res.status(201).json({ success: true });
+    return res.status(201).json({ success: true, imageUrl: finalImageUrl });
   } catch (error) {
     console.error("Webcam snapshot API error:", error);
     return res.status(500).json({ error: "Internal Server Error" });
