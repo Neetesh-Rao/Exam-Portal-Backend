@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import { Router, Response } from "express";
 import { Question } from "../models/Question.js";
 import { authenticateUser, requireRole, AuthRequest } from "../middleware/auth.js";
@@ -6,7 +7,13 @@ const router = Router();
 
 const getQuestionFilter = (req: AuthRequest, questionId?: string) => {
   const filter: any = {};
-  if (questionId) filter._id = questionId;
+  if (questionId) {
+    if (mongoose.Types.ObjectId.isValid(questionId)) {
+      filter._id = new mongoose.Types.ObjectId(questionId);
+    } else {
+      filter._id = questionId;
+    }
+  }
   if (req.user?.companyId) {
     filter.$or = [
       { companyId: req.user.companyId },
@@ -97,7 +104,7 @@ router.get(
 router.patch(
   "/:id",
   authenticateUser,
-  requireRole(["super_admin", "admin"]),
+  requireRole(["super_admin", "admin", "recruiter"]),
   async (req: AuthRequest, res: Response) => {
     try {
       const questionId = String(req.params.id);
@@ -121,15 +128,28 @@ router.patch(
 router.delete(
   "/:id",
   authenticateUser,
-  requireRole(["super_admin", "admin"]),
+  requireRole(["super_admin", "admin", "recruiter", "interviewer"]),
   async (req: AuthRequest, res: Response) => {
     try {
       const questionId = String(req.params.id);
-      const filter = getQuestionFilter(req, questionId);
-      const question = await Question.findOneAndDelete(filter);
-      if (!question) return res.status(404).json({ error: "Question not found" });
+      console.log(`Deleting question ID: ${questionId}`);
 
-      return res.json({ success: true });
+      // Try deleting by _id or filter
+      let question = null;
+      if (mongoose.Types.ObjectId.isValid(questionId)) {
+        question = await Question.findByIdAndDelete(questionId);
+      } else {
+        const filter = getQuestionFilter(req, questionId);
+        question = await Question.findOneAndDelete(filter);
+      }
+
+      if (!question) {
+        console.warn(`Question not found for deletion: ${questionId}`);
+        return res.status(404).json({ error: "Question not found" });
+      }
+
+      console.log(`Successfully deleted question: ${questionId}`);
+      return res.json({ success: true, message: "Question deleted successfully" });
     } catch (error) {
       console.error("Delete Question API error:", error);
       return res.status(500).json({ error: "Internal Server Error" });

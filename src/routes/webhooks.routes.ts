@@ -19,17 +19,16 @@ function verifyWebhookSignature(req: Request): boolean {
 
   const expectedSignature = crypto
     .createHmac("sha256", secret)
-    .update(JSON.stringify(req.body))
+    .update(typeof req.body === "string" ? req.body : JSON.stringify(req.body))
     .digest("hex");
 
   try {
-    // timingSafeEqual prevents timing attacks
     return crypto.timingSafeEqual(
-      Buffer.from(receivedSignature),
-      Buffer.from(expectedSignature)
+      Buffer.from(receivedSignature.trim().toLowerCase()),
+      Buffer.from(expectedSignature.trim().toLowerCase())
     );
   } catch {
-    return false; // buffer length mismatch
+    return false;
   }
 }
 
@@ -44,10 +43,12 @@ router.post("/crm-candidate", async (req: Request, res: Response) => {
     }
 
     // 2. Validate required fields
-    const { name, email, phone, position, companyId } = req.body;
+    const { name, email, phone, position, resume, resumeUrl, companyId } = req.body;
     if (!name || !email) {
       return res.status(400).json({ error: "name and email are required" });
     }
+
+    const finalResumeUrl = resumeUrl || resume || undefined;
 
     // 3. Duplicate check — if same email already exists, return existing candidate
     let candidate = await Candidate.findOne({ email: email.toLowerCase().trim() });
@@ -60,6 +61,7 @@ router.post("/crm-candidate", async (req: Request, res: Response) => {
         email: email.toLowerCase().trim(),
         phone: phone?.trim() || undefined,
         position: position?.trim() || undefined,
+        resumeUrl: finalResumeUrl,
         source: "crm_onboarding_form",
         status: "pending_invite",
         companyId: companyId || undefined,
@@ -67,7 +69,11 @@ router.post("/crm-candidate", async (req: Request, res: Response) => {
       isNew = true;
       console.log(`✅ CRM Webhook: New candidate created — ${email}`);
     } else {
-      console.log(`ℹ️  CRM Webhook: Candidate already exists — ${email} (skipping duplicate)`);
+      if (finalResumeUrl && !candidate.resumeUrl) {
+        candidate.resumeUrl = finalResumeUrl;
+        await candidate.save();
+      }
+      console.log(`ℹ️  CRM Webhook: Candidate already exists — ${email}`);
     }
 
     // 5. Real-time socket emit → admin dashboard updates instantly

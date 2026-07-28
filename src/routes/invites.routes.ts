@@ -43,7 +43,7 @@ router.post(
   requireRole(["super_admin", "admin", "recruiter"]),
   async (req: AuthRequest, res: Response) => {
     try {
-      const { testId, candidateEmails, expiresInHours, expiresInDays } = req.body;
+      const { testId, candidateEmails, expiresInSeconds, expiresInMinutes, expiresInHours, expiresInDays } = req.body;
 
       if (!testId || !candidateEmails || !Array.isArray(candidateEmails) || candidateEmails.length === 0) {
         return res.status(400).json({ error: "Test ID and candidate emails are required" });
@@ -53,7 +53,11 @@ router.post(
       if (!test) return res.status(404).json({ error: "Test not found" });
 
       const expiresAt = new Date();
-      if (expiresInHours && Number(expiresInHours) > 0) {
+      if (expiresInSeconds && Number(expiresInSeconds) > 0) {
+        expiresAt.setTime(expiresAt.getTime() + Number(expiresInSeconds) * 1000);
+      } else if (expiresInMinutes && Number(expiresInMinutes) > 0) {
+        expiresAt.setTime(expiresAt.getTime() + Number(expiresInMinutes) * 60 * 1000);
+      } else if (expiresInHours && Number(expiresInHours) > 0) {
         expiresAt.setTime(expiresAt.getTime() + Number(expiresInHours) * 60 * 60 * 1000);
       } else {
         const days = Number(expiresInDays) || 7;
