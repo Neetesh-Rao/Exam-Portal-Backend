@@ -19,6 +19,7 @@ import analyticsRoutes from "./routes/analytics.routes.js";
 import notificationsRoutes from "./routes/notifications.routes.js";
 import liveMonitorRoutes from "./routes/liveMonitor.routes.js";
 import healthRoutes from "./routes/health.routes.js";
+import webhooksRoutes from "./routes/webhooks.routes.js";
 
 const app = express();
 const server = http.createServer(app);
@@ -55,6 +56,9 @@ io.on("connection", (socket) => {
     console.log("Socket disconnected:", socket.id);
   });
 });
+
+// Store io on app so any route can emit via req.app.get('io')
+app.set("io", io);
 
 // Middlewares
 app.use(
@@ -125,6 +129,7 @@ app.use("/api/invites", invitesRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/notifications", notificationsRoutes);
 app.use("/api/live-monitor", liveMonitorRoutes);
+app.use("/api/webhooks", webhooksRoutes);
 
 if (process.env.NODE_ENV !== "production" || !process.env.VERCEL) {
   server.listen(PORT, () => {
