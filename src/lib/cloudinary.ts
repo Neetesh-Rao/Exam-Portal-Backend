@@ -21,25 +21,39 @@ export async function uploadVideoToCloudinary(
   folder: string = "proctoring_recordings"
 ): Promise<string> {
   configureCloudinary();
+
+  // Attempt 1: resource_type "video"
   try {
     const result = await cloudinary.uploader.upload(filePathOrData, {
       resource_type: "video",
       folder: folder,
     });
-    console.log(`✅ Cloudinary video uploaded successfully: ${result.secure_url}`);
+    console.log(`✅ Cloudinary video uploaded (video mode): ${result.secure_url}`);
     return result.secure_url;
-  } catch (error) {
-    console.warn("Cloudinary video upload retry with auto resource_type...", error);
+  } catch (err1) {
+    console.warn("Cloudinary upload (video) failed, retrying with auto mode...", err1);
+    // Attempt 2: resource_type "auto"
     try {
-      const fallbackResult = await cloudinary.uploader.upload(filePathOrData, {
+      const result = await cloudinary.uploader.upload(filePathOrData, {
         resource_type: "auto",
         folder: folder,
       });
-      console.log(`✅ Cloudinary video uploaded (auto fallback): ${fallbackResult.secure_url}`);
-      return fallbackResult.secure_url;
-    } catch (rawError) {
-      console.error("Cloudinary video upload error details:", rawError);
-      throw rawError;
+      console.log(`✅ Cloudinary video uploaded (auto mode): ${result.secure_url}`);
+      return result.secure_url;
+    } catch (err2) {
+      console.warn("Cloudinary upload (auto) failed, retrying with raw mode...", err2);
+      // Attempt 3: resource_type "raw"
+      try {
+        const result = await cloudinary.uploader.upload(filePathOrData, {
+          resource_type: "raw",
+          folder: folder,
+        });
+        console.log(`✅ Cloudinary video uploaded (raw mode): ${result.secure_url}`);
+        return result.secure_url;
+      } catch (err3) {
+        console.error("Cloudinary video upload failed across all modes:", err3);
+        throw err3;
+      }
     }
   }
 }
@@ -57,7 +71,7 @@ export async function uploadImageToCloudinary(
     console.log(`✅ Cloudinary snapshot image uploaded: ${result.secure_url}`);
     return result.secure_url;
   } catch (error) {
-    console.error("Cloudinary image upload error:", error);
-    return base64OrPath; // Fallback to raw base64 if upload fails
+    console.error("Cloudinary image upload error, using fallback:", error);
+    return base64OrPath;
   }
 }

@@ -244,7 +244,7 @@ router.post(
       let videoRecordingUrl = submission.videoRecordingUrl;
       let screenRecordingUrl = submission.screenRecordingUrl;
 
-      // Write buffer to os.tmpdir() (writable on Vercel), upload, then clean up
+      // Handle camera video file / buffer
       if (files?.cameraVideo?.[0] && files.cameraVideo[0].buffer) {
         const cameraFile = files.cameraVideo[0];
         const tmpPath = path.join(os.tmpdir(), `camera-${Date.now()}.webm`);
@@ -252,12 +252,19 @@ router.post(
           fs.writeFileSync(tmpPath, cameraFile.buffer);
           videoRecordingUrl = await uploadVideoToCloudinary(tmpPath, "bitmax_proctoring_camera");
         } catch (err) {
-          console.error("Camera video upload error:", err);
+          console.error("Camera video file upload error:", err);
         } finally {
           if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
         }
+      } else if (req.body?.cameraVideoBase64) {
+        try {
+          videoRecordingUrl = await uploadVideoToCloudinary(req.body.cameraVideoBase64, "bitmax_proctoring_camera");
+        } catch (err) {
+          console.error("Camera video base64 upload error:", err);
+        }
       }
 
+      // Handle screen video file / buffer
       if (files?.screenVideo?.[0] && files.screenVideo[0].buffer) {
         const screenFile = files.screenVideo[0];
         const tmpPath = path.join(os.tmpdir(), `screen-${Date.now()}.webm`);
@@ -265,20 +272,53 @@ router.post(
           fs.writeFileSync(tmpPath, screenFile.buffer);
           screenRecordingUrl = await uploadVideoToCloudinary(tmpPath, "bitmax_proctoring_screen");
         } catch (err) {
-          console.error("Screen video upload error:", err);
+          console.error("Screen video file upload error:", err);
         } finally {
           if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+        }
+      } else if (req.body?.screenVideoBase64) {
+        try {
+          screenRecordingUrl = await uploadVideoToCloudinary(req.body.screenVideoBase64, "bitmax_proctoring_screen");
+        } catch (err) {
+          console.error("Screen video base64 upload error:", err);
         }
       }
 
       submission.videoRecordingUrl = videoRecordingUrl;
       submission.screenRecordingUrl = screenRecordingUrl;
+
+      // Push to recordingsHistory archive array
+      if (!submission.recordingsHistory) {
+        submission.recordingsHistory = [];
+      }
+
+      if (videoRecordingUrl && !submission.recordingsHistory.some((r) => r.url === videoRecordingUrl)) {
+        submission.recordingsHistory.push({
+          type: "camera",
+          url: videoRecordingUrl,
+          timestamp: new Date(),
+          event: "Camera Stream Recording",
+        });
+      }
+
+      if (screenRecordingUrl && !submission.recordingsHistory.some((r) => r.url === screenRecordingUrl)) {
+        submission.recordingsHistory.push({
+          type: "screen",
+          url: screenRecordingUrl,
+          timestamp: new Date(),
+          event: "Screen Stream Recording",
+        });
+      }
+
       await submission.save();
+
+      console.log(`✅ Saved recordings to Submission ${submissionId}: Camera=${videoRecordingUrl}, Screen=${screenRecordingUrl}`);
 
       return res.json({
         success: true,
         videoRecordingUrl,
         screenRecordingUrl,
+        recordingsHistory: submission.recordingsHistory,
       });
     } catch (error) {
       console.error("Upload full recordings API error:", error);
@@ -286,6 +326,65 @@ router.post(
     }
   }
 );
+
+// GET /api/submissions/:id/recordings - Fetch all historical recordings & snapshots for a submission
+router.get("/:id/recordings", async (req: Request, res: Response) => {
+  try {
+    const submission = await Submission.findById(req.params.id)
+      .populate("candidateId", "name email phone position")
+      .populate("testId", "title description totalDurationSeconds")
+      .lean();
+
+    if (!submission) return res.status(404).json({ error: "Submission not found" });
+
+    const snapshots = submission.recordingSnapshots || [];
+    const history = submission.recordingsHistory || [];
+
+    // Build unified timeline of all video & snapshot recordings with timestamps
+    const unifiedRecordings = [
+      ...(submission.videoRecordingUrl ? [{
+        type: "camera",
+        url: submission.videoRecordingUrl,
+        timestamp: submission.submittedAt || submission.createdAt,
+        title: "Webcam Camera Recording Video",
+      }] : []),
+      ...(submission.screenRecordingUrl ? [{
+        type: "screen",
+        url: submission.screenRecordingUrl,
+        timestamp: submission.submittedAt || submission.createdAt,
+        title: "Candidate Screen Capture Video",
+      }] : []),
+      ...history.map((h: any) => ({
+        type: h.type,
+        url: h.url,
+        timestamp: h.timestamp,
+        title: `${h.type.toUpperCase()} Stream — ${h.event || "Proctoring Record"}`,
+      })),
+      ...snapshots.map((s: any) => ({
+        type: "snapshot",
+        url: s.imageUrl,
+        timestamp: s.timestamp,
+        title: `Webcam Snapshot — ${s.event || "Frame Capture"}`,
+      })),
+    ];
+
+    return res.json({
+      submissionId: submission._id.toString(),
+      candidate: submission.candidateId,
+      test: submission.testId,
+      videoRecordingUrl: submission.videoRecordingUrl,
+      screenRecordingUrl: submission.screenRecordingUrl,
+      recordingsHistory: submission.recordingsHistory || [],
+      snapshots: submission.recordingSnapshots || [],
+      unifiedRecordings,
+      startedAt: submission.startedAt,
+      submittedAt: submission.submittedAt,
+    });
+  } catch (error) {
+    console.error("Get recordings API error:", error);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
 
 
 // PATCH /api/submissions/:id/answer

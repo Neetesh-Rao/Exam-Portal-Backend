@@ -1,5 +1,12 @@
 import mongoose, { Schema, Document } from "mongoose";
 
+export interface IRecordingHistoryItem {
+  type: "camera" | "screen" | "snapshot";
+  url: string;
+  timestamp: Date;
+  event?: string;
+}
+
 export interface ISubmission extends Document {
   companyId?: mongoose.Types.ObjectId;
   testId: mongoose.Types.ObjectId;
@@ -18,12 +25,13 @@ export interface ISubmission extends Document {
     imageUrl: string;
     event?: string;
   }[];
+  recordingsHistory?: IRecordingHistoryItem[];
   videoRecordingUrl?: string;
   screenRecordingUrl?: string;
   autoScore?: number;
   manualScore?: number;
   finalScore?: number;
-  status: 'in_progress' | 'submitted' | 'auto_submitted' | 'graded';
+  status: "in_progress" | "submitted" | "auto_submitted" | "graded";
   startedAt?: Date;
   submittedAt?: Date;
   createdAt: Date;
@@ -32,13 +40,13 @@ export interface ISubmission extends Document {
 
 const SubmissionSchema = new Schema<ISubmission>(
   {
-    companyId: { type: Schema.Types.ObjectId, ref: 'Company', required: false },
-    testId: { type: Schema.Types.ObjectId, ref: 'Test', required: true },
-    candidateId: { type: Schema.Types.ObjectId, ref: 'Candidate', required: true },
-    inviteId: { type: Schema.Types.ObjectId, ref: 'TestInvite', required: false },
+    companyId: { type: Schema.Types.ObjectId, ref: "Company", required: false },
+    testId: { type: Schema.Types.ObjectId, ref: "Test", required: true },
+    candidateId: { type: Schema.Types.ObjectId, ref: "Candidate", required: true },
+    inviteId: { type: Schema.Types.ObjectId, ref: "TestInvite", required: false },
     answers: [
       {
-        questionId: { type: Schema.Types.ObjectId, ref: 'Question', required: true },
+        questionId: { type: Schema.Types.ObjectId, ref: "Question", required: true },
         answerText: { type: String },
         selectedOptionIds: [{ type: String }],
         codeAnswer: { type: String },
@@ -53,6 +61,14 @@ const SubmissionSchema = new Schema<ISubmission>(
         event: { type: String, default: "snapshot" },
       },
     ],
+    recordingsHistory: [
+      {
+        type: { type: String, enum: ["camera", "screen", "snapshot"], required: true },
+        url: { type: String, required: true },
+        timestamp: { type: Date, default: Date.now },
+        event: { type: String },
+      },
+    ],
     videoRecordingUrl: { type: String },
     screenRecordingUrl: { type: String },
     autoScore: { type: Number },
@@ -60,8 +76,8 @@ const SubmissionSchema = new Schema<ISubmission>(
     finalScore: { type: Number },
     status: {
       type: String,
-      enum: ['in_progress', 'submitted', 'auto_submitted', 'graded'],
-      default: 'in_progress',
+      enum: ["in_progress", "submitted", "auto_submitted", "graded"],
+      default: "in_progress",
     },
     startedAt: { type: Date },
     submittedAt: { type: Date },
