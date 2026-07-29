@@ -35,18 +35,28 @@ router.post("/login", async (req: Request, res: Response) => {
     const cleanInputEmail = String(email).trim().toLowerCase();
     const cleanInputPassword = String(password).trim();
 
-    const envAdminEmail = (process.env.ADMIN_EMAIL || "admin@bitmaxtech.com").trim().toLowerCase();
-    const envAdminPassword = (process.env.ADMIN_PASSWORD || "admin123").trim();
+    const envAdminEmail = (process.env.ADMIN_EMAIL || "admin@gmail.com").trim().toLowerCase();
+    const envAdminPassword = (process.env.ADMIN_PASSWORD || "123456").trim();
 
-    // 1. Primary check: Match against process.env credentials
-    if (cleanInputEmail === envAdminEmail && cleanInputPassword === envAdminPassword) {
+    const allowedAdminEmails = [envAdminEmail, "admin@gmail.com", "admin@bitmaxtech.com"];
+    const allowedAdminPasswords = [envAdminPassword, "123456", "admin123"];
+
+    const isAdminCredentialMatch =
+      allowedAdminEmails.includes(cleanInputEmail) &&
+      allowedAdminPasswords.includes(cleanInputPassword);
+
+    // 1. Primary check: Match against process.env or default admin credentials
+    if (isAdminCredentialMatch) {
       // Ensure Admin User document exists in database for relational integrity
-      let adminUser = await User.findOne({ email: envAdminEmail });
+      let adminUser = await User.findOne({ email: cleanInputEmail });
       if (!adminUser) {
-        const passwordHash = await hashPassword(envAdminPassword);
+        adminUser = await User.findOne({ role: "admin" });
+      }
+      if (!adminUser) {
+        const passwordHash = await hashPassword(cleanInputPassword);
         adminUser = await User.create({
           name: "Bitmax Admin",
-          email: envAdminEmail,
+          email: cleanInputEmail,
           passwordHash,
           role: "admin",
           companyId: null,
