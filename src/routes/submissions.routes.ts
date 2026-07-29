@@ -515,7 +515,7 @@ router.post("/:id/submit", async (req: Request, res: Response) => {
     }
 
     const qIds = submission.answers.map((a: any) => a.questionId).filter(Boolean);
-    const questions = await Question.find({ _id: { $in: qIds } }).select("type options marks");
+    const questions = await Question.find({ _id: { $in: qIds } }).select("type options marks correctTextAnswer negativeMarks");
     const qMap = new Map(questions.map((q: any) => [q._id.toString(), q]));
 
     let autoScore = 0;
@@ -534,10 +534,45 @@ router.post("/:id/submit", async (req: Request, res: Response) => {
           answer.marksObtained = question.marks || 1;
           autoScore += (question.marks || 1);
         } else {
+          // Apply negative marking if configured
+          answer.marksObtained = selectedOptions.length > 0 ? -(question.negativeMarks || 0) : 0;
+          if (answer.marksObtained < 0) autoScore = Math.max(0, autoScore + answer.marksObtained);
+        }
+      } else if (question.type === "fill_blank" && question.correctTextAnswer) {
+        // Exact case-insensitive match for fill in the blank
+        const candidateAnswer = (answer.answerText || "").trim().toLowerCase();
+        const correctAnswer = question.correctTextAnswer.trim().toLowerCase();
+        if (candidateAnswer && candidateAnswer === correctAnswer) {
+          answer.marksObtained = question.marks || 1;
+          autoScore += (question.marks || 1);
+        } else {
+          answer.marksObtained = 0;
+        }
+      } else if (question.type === "text_area" && question.correctTextAnswer) {
+        // Keyword-based matching: check if candidate answer contains expected keywords
+        const candidateAnswer = (answer.answerText || "").toLowerCase();
+        const keywords = question.correctTextAnswer.toLowerCase().split(/[,;\n]+/).map((k: string) => k.trim()).filter(Boolean);
+        if (keywords.length > 0 && candidateAnswer) {
+          const matchedCount = keywords.filter((kw: string) => candidateAnswer.includes(kw)).length;
+          const matchRatio = matchedCount / keywords.length;
+          // Partial credit: award marks proportional to keyword matches (at least 50% match = full marks)
+          if (matchRatio >= 0.5) {
+            answer.marksObtained = question.marks || 1;
+            autoScore += (question.marks || 1);
+          } else if (matchRatio > 0) {
+            // Partial marks: round to nearest 0.5
+            const partial = Math.round((matchRatio * (question.marks || 1)) * 2) / 2;
+            answer.marksObtained = partial;
+            autoScore += partial;
+          } else {
+            answer.marksObtained = 0;
+          }
+        } else {
+          // No correctTextAnswer set — skip auto-grading (awaits manual)
           answer.marksObtained = 0;
         }
       } else {
-        // Text/coding/fill_blank — awaits manual grading
+        // coding / file_upload / etc — no correct answer to compare, awaits manual grading
         answer.marksObtained = 0;
       }
     }
