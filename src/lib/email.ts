@@ -21,7 +21,8 @@ export async function sendCandidateInviteEmail({
     return false;
   }
 
-  const from = `"BITMAX Technology (P) Ltd" <${emailUser}>`;
+  const fromName = "BITMAX Technology";
+  const from = `"${fromName}" <${emailUser}>`;
 
   const transporter = nodemailer.createTransport({
     service: "gmail",
@@ -36,44 +37,60 @@ export async function sendCandidateInviteEmail({
     timeStyle: "short",
   });
 
-  const htmlContent = `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 12px;">
-      <div style="text-align: center; margin-bottom: 20px;">
-        <h2 style="color: #0284c7; margin: 0;">BITMAX Technology (P) Ltd</h2>
-        <p style="color: #666; font-size: 12px; margin-top: 4px;">STEP AHEAD • Technical Assessment Portal</p>
-      </div>
+  // 1. Plain-text version (Essential for Anti-Spam deliverability in Gmail/Outlook)
+  const textContent = `Hello ${candidateName},
 
-      <p>Hello <strong>${candidateName}</strong>,</p>
+You have been invited by BITMAX Technology to complete an assessment:
 
-      <p>You have been invited by <strong>BITMAX Technology (P) Ltd</strong> to complete an official technical assessment:</p>
+Assessment: ${testTitle}
+Expiration Date: ${formattedExpiry}
 
-      <div style="background-color: #f8fafc; border-left: 4px solid #0284c7; padding: 15px; margin: 20px 0;">
-        <h3 style="margin: 0 0 8px 0; color: #1e293b;">${testTitle}</h3>
-        <p style="margin: 0; color: #64748b; font-size: 14px;">Assessment Link Expiration: <strong>${formattedExpiry}</strong></p>
-      </div>
+Access your assessment using the link below:
+${inviteLink}
 
-      <div style="text-align: center; margin: 30px 0;">
-        <a href="${inviteLink}" target="_blank" style="background-color: #0284c7; color: white; padding: 12px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">
-          Start Assessment Now →
-        </a>
-      </div>
+Thank you,
+BITMAX Technology Team`;
 
-      <p style="font-size: 13px; color: #64748b;">Or copy and paste this link in your browser:</p>
-      <p style="font-size: 12px; color: #0284c7; word-break: break-all;">${inviteLink}</p>
+  // 2. Ultra-lightweight, clean HTML email template
+  const htmlContent = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="font-family: Arial, sans-serif; color: #333333; line-height: 1.6; margin: 0; padding: 20px; background-color: #ffffff;">
+  <div style="max-width: 560px; margin: 0 auto; padding: 20px; border: 1px solid #eeeeee; border-radius: 6px;">
+    <h3 style="color: #0284c7; margin-top: 0;">BITMAX Technology</h3>
+    <p>Hello ${candidateName},</p>
+    <p>You have been invited to complete the technical assessment: <strong>${testTitle}</strong>.</p>
+    
+    <p style="margin: 20px 0;">
+      <a href="${inviteLink}" target="_blank" style="background-color: #0284c7; color: #ffffff; padding: 10px 20px; text-decoration: none; border-radius: 4px; font-weight: bold; display: inline-block;">Start Assessment</a>
+    </p>
 
-      <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 30px 0;" />
-      <p style="font-size: 11px; color: #94a3b8; text-align: center;">
-        © 2026 BITMAX Technology (P) Ltd. This is an automated assessment invitation.
-      </p>
-    </div>
-  `;
+    <p style="font-size: 13px; color: #666666;">If the button does not work, copy and paste this URL into your browser:<br>
+    <a href="${inviteLink}" style="color: #0284c7; word-break: break-all;">${inviteLink}</a></p>
+    
+    <p style="font-size: 12px; color: #888888; margin-top: 25px; border-top: 1px solid #eeeeee; padding-top: 15px;">
+      This link will expire on ${formattedExpiry}.<br>
+      © BITMAX Technology (P) Ltd
+    </p>
+  </div>
+</body>
+</html>`;
 
   try {
     await transporter.sendMail({
       from,
       to,
-      subject: `Technical Assessment Invitation: ${testTitle} | BITMAX Technology`,
+      subject: `Assessment Invitation: ${testTitle}`,
+      text: textContent,
       html: htmlContent,
+      headers: {
+        "X-Priority": "3",
+        "X-MSMail-Priority": "Normal",
+        "Importance": "Normal",
+      },
     });
     console.log(`Successfully sent candidate invite email to ${to}`);
     return true;
